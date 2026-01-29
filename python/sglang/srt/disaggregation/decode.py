@@ -349,6 +349,11 @@ class DecodePreallocQueue:
             self.queue.append(
                 DecodeRequest(req=req, kv_receiver=kv_receiver, waiting_for_input=False)
             )
+            # Debug logging for request arrival
+            logger.info(
+                f"[REQ_ARRIVE] rid={req.rid}, queue_len_after={len(self.queue)}, "
+                f"is_retracted={is_retracted}"
+            )
 
     def _check_if_req_exceed_kv_capacity(self, req: Req) -> bool:
         if len(req.origin_input_ids) > self.max_total_num_tokens:
@@ -586,6 +591,15 @@ class DecodePreallocQueue:
         self.queue = [
             entry for i, entry in enumerate(self.queue) if i not in indices_to_remove
         ]
+
+        # Debug logging for pop_preallocated
+        if len(preallocated_reqs) > 0 or len(self.queue) > 0:
+            logger.info(
+                f"[PREALLOC_DEBUG] preallocated={len(preallocated_reqs)}, "
+                f"remaining_in_queue={len(self.queue)}, "
+                f"req_pool_avail={self.req_to_token_pool.available_size()}, "
+                f"allocatable_tokens={allocatable_tokens}"
+            )
 
         return preallocated_reqs, failed_reqs
 
@@ -950,6 +964,29 @@ class SchedulerDisaggregationDecodeMixin:
             ready_grammar_requests = self.grammar_manager.get_ready_grammar_requests()
             for req in ready_grammar_requests:
                 self._add_request_to_queue(req)
+
+        # Snapshot queue lengths before they are cleared (for metrics)
+        prealloc_queue_len = len(self.disagg_decode_prealloc_queue.queue)
+        retracted_queue_len = len(self.disagg_decode_prealloc_queue.retracted_queue)
+        transfer_queue_len = len(self.disagg_decode_transfer_queue.queue)
+        waiting_queue_len = len(self.waiting_queue)
+        running_batch_size = self.running_batch.batch_size()
+        req_pool_avail = self.req_to_token_pool.available_size()
+        req_pool_size = getattr(self.req_to_token_pool, 'size', 'N/A')
+
+        self._decode_queue_snapshot = (
+            prealloc_queue_len
+            + transfer_queue_len
+            + waiting_queue_len
+        )
+
+        # Debug logging for queue analysis (disabled - too frequent)
+        if False: logger.info(
+            f"[QUEUE_DEBUG] prealloc={prealloc_queue_len}, retracted={retracted_queue_len}, "
+            f"transfer={transfer_queue_len}, waiting={waiting_queue_len}, "
+            f"running={running_batch_size}, req_pool_avail={req_pool_avail}, "
+            f"req_pool_size={req_pool_size}, snapshot={self._decode_queue_snapshot}"
+        )
 
         if len(self.waiting_queue) == 0:
             return None

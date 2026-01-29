@@ -21,6 +21,7 @@ from sglang.srt.managers.schedule_batch import (
     RequestStage,
     ScheduleBatch,
 )
+from sglang.srt.managers.scheduler_metrics_mixin import RequestMetrics
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.server_args import get_global_server_args
 from sglang.srt.tracing.trace import trace_slice, trace_slice_batch, trace_slice_end
@@ -1068,6 +1069,14 @@ class SchedulerOutputProcessorMixin:
             ):
                 req.log_time_stats()
 
+            # Export per-request metrics to CSV
+            if (
+                req.finished()
+                and self.attn_tp_rank == 0
+                and self.request_metrics_exporter is not None
+            ):
+                self._export_request_metrics(req)
+
         # Send to detokenizer
         if reqs or is_idle_batch:
             if self.model_config.is_multimodal_gen:
@@ -1169,3 +1178,36 @@ class SchedulerOutputProcessorMixin:
                 retraction_counts=retraction_counts,
             )
         )
+
+    def _export_request_metrics(self: "Scheduler", req: Req):
+        """Export per-request metrics to CSV."""
+        import json
+
+        finished_reason_str = ""
+        if req.finished_reason is not None:
+            finished_reason_str = json.dumps(req.finished_reason.to_json())
+
+        metrics = RequestMetrics(
+            rid=req.rid,
+            seqlen=req.seqlen,
+            extend_input_len=req.extend_input_len,
+            cached_tokens=req.cached_tokens,
+            finished_reason=finished_reason_str,
+            finished_len=req.finished_len,
+            lb_entry_time=req.time_stats.lb_entry_time,
+            lb_entry_time_perf=req.time_stats.lb_entry_time_perf,
+            decode_prealloc_queue_entry_time=req.time_stats.decode_prealloc_queue_entry_time,
+            decode_transfer_queue_entry_time=req.time_stats.decode_transfer_queue_entry_time,
+            wait_queue_entry_time=req.time_stats.wait_queue_entry_time,
+            forward_entry_time=req.time_stats.forward_entry_time,
+            completion_time=req.time_stats.completion_time,
+            retraction_count=req.retraction_count,
+            is_retracted=req.is_retracted,
+            retracted_stain=req.retracted_stain,
+            kv_committed_len=req.kv_committed_len,
+            kv_allocated_len=req.kv_allocated_len,
+            input_len=len(req.origin_input_ids),
+            output_len=len(req.output_ids),
+            disagg_mode=req.time_stats.disagg_mode_str(),
+        )
+        self.request_metrics_exporter.record(metrics)

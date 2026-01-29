@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 import logging
 import time
 from collections import defaultdict
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass, fields
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from sglang.srt.disaggregation.kv_events import EventPublisherFactory, KVEventBatch
@@ -52,6 +54,107 @@ class KvMetrics:
         self.gpu_cache_usage_perc = None
         self.gpu_prefix_cache_hit_rate = None
         self.data_parallel_rank = None
+
+
+@dataclass
+class BatchMetrics:
+    """Dataclass for batch-level metrics exported to CSV."""
+
+    batch_id: int
+    timestamp: float
+    forward_mode: str  # "prefill" or "decode"
+    # 原有字段（保留，向后兼容）
+    batch_size: int
+    num_tokens: int
+    token_usage: float
+    # 新增字段
+    batch_num_tokens: int  # batch 中所有请求的 seq_len 之和
+    gpu_num_reqs: int  # GPU 上所有请求数
+    # 调度相关
+    gen_throughput: float
+    num_queue_reqs: int
+    num_retracted_reqs: int
+    # prefill specific fields
+    num_new_seqs: int = 0
+    num_new_tokens: int = 0
+    num_cached_tokens: int = 0
+    cache_hit_rate: float = 0.0
+
+
+class BatchMetricsCSVExporter:
+    """Exports batch-level metrics to a CSV file."""
+
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        self._write_header()
+
+    def _write_header(self):
+        with open(self.filepath, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([field.name for field in fields(BatchMetrics)])
+
+    def record(self, metrics: BatchMetrics):
+        with open(self.filepath, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(asdict(metrics).values())
+
+
+@dataclass
+class RequestMetrics:
+    """Dataclass for per-request metrics exported to CSV."""
+
+    # Request identification
+    rid: str
+
+    # Sequence information
+    seqlen: int
+    extend_input_len: int
+    cached_tokens: int
+
+    # Finish information
+    finished_reason: str
+    finished_len: Optional[int]
+
+    # Time statistics (all from req.time_stats)
+    lb_entry_time: float  # time.time() - epoch timestamp for absolute ordering
+    lb_entry_time_perf: float  # time.perf_counter() - for accurate interval calculations
+    decode_prealloc_queue_entry_time: float
+    decode_transfer_queue_entry_time: float
+    wait_queue_entry_time: float
+    forward_entry_time: float
+    completion_time: float
+
+    # Retraction information
+    retraction_count: int
+    is_retracted: bool
+    retracted_stain: bool
+
+    # KV cache information
+    kv_committed_len: int
+    kv_allocated_len: int
+
+    # Additional context
+    input_len: int
+    output_len: int
+    disagg_mode: str
+
+
+class RequestMetricsCSVExporter:
+    """Exports per-request metrics to a CSV file."""
+
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        self._write_header()
+
+    def _write_header(self):
+        with open(self.filepath, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([field.name for field in fields(RequestMetrics)])
+
+    def record(self, metrics: RequestMetrics):
+        with open(self.filepath, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(asdict(metrics).values())
 
 
 class SchedulerMetricsMixin:
@@ -124,6 +227,31 @@ class SchedulerMetricsMixin:
             self.init_kv_events(self.server_args.kv_events_config)
 
         self.scheduler_status_logger = SchedulerStatusLogger.maybe_create()
+
+        # Initialize batch metrics exporter
+        self.batch_metrics_exporter: Optional[BatchMetricsCSVExporter] = None
+        if self.server_args.export_batch_metrics_to_file:
+            self.batch_metrics_exporter = BatchMetricsCSVExporter(
+                self.server_args.export_batch_metrics_to_file
+            )
+
+        # Initialize per-request metrics exporter
+        self.request_metrics_exporter: Optional[RequestMetricsCSVExporter] = None
+        if self.server_args.export_request_metrics_to_csv:
+            self.request_metrics_exporter = RequestMetricsCSVExporter(
+                self.server_args.export_request_metrics_to_csv
+            )
+
+    def _get_num_queue_reqs(self: Scheduler) -> int:
+        """Get queue length based on disaggregation mode."""
+        if self.disaggregation_mode == DisaggregationMode.DECODE:
+            # In decode mode, waiting_queue is drained in get_new_prebuilt_batch()
+            # before metrics are recorded. Use the snapshot saved before draining.
+            return getattr(self, "_decode_queue_snapshot", 0)
+        elif self.disaggregation_mode == DisaggregationMode.PREFILL:
+            return len(self.disagg_prefill_bootstrap_queue.queue)
+        else:
+            return len(self.waiting_queue)
 
     def init_kv_events(self: Scheduler, kv_events_config: Optional[str]):
         if self.enable_kv_cache_events:
@@ -274,6 +402,31 @@ class SchedulerMetricsMixin:
             self.metrics_collector.log_stats(self.stats)
             self._emit_kv_metrics()
         self._publish_kv_events()
+
+        # Export batch metrics to CSV
+        if self.batch_metrics_exporter:
+            total_tokens = adder.log_input_tokens + adder.log_hit_tokens
+            batch_cache_hit_rate = (
+                adder.log_hit_tokens / total_tokens if total_tokens > 0 else 0.0
+            )
+            metrics = BatchMetrics(
+                batch_id=self.forward_ct,
+                timestamp=time.time(),
+                forward_mode="prefill",
+                batch_size=len(can_run_list),
+                num_tokens=num_used,
+                token_usage=token_usage,
+                batch_num_tokens=adder.log_input_tokens,
+                gpu_num_reqs=running_bs,
+                gen_throughput=self.last_input_throughput,
+                num_queue_reqs=self._get_num_queue_reqs(),
+                num_retracted_reqs=self.num_retracted_reqs,
+                num_new_seqs=len(can_run_list),
+                num_new_tokens=adder.log_input_tokens,
+                num_cached_tokens=adder.log_hit_tokens,
+                cache_hit_rate=batch_cache_hit_rate,
+            )
+            self.batch_metrics_exporter.record(metrics)
 
     def log_prefill_stats_late(self: Scheduler, batch: Optional[ScheduleBatch]):
         """This should be called after `batch` has gathered enough metadata."""
@@ -462,6 +615,24 @@ class SchedulerMetricsMixin:
 
         if x := self.scheduler_status_logger:
             x.maybe_dump(batch, self.waiting_queue)
+
+        # Export batch metrics to CSV for every decode batch
+        if self.batch_metrics_exporter:
+            num_used, token_usage, _, _ = self._get_token_info()
+            metrics = BatchMetrics(
+                batch_id=self.forward_ct,
+                timestamp=time.time(),
+                forward_mode="decode",
+                batch_size=len(batch.reqs),
+                num_tokens=num_used,
+                token_usage=token_usage,
+                batch_num_tokens=batch.seq_lens_cpu.sum().item(),
+                gpu_num_reqs=len(self.running_batch.reqs) if not self.running_batch.is_empty() else len(batch.reqs),
+                gen_throughput=self.last_gen_throughput,
+                num_queue_reqs=self._get_num_queue_reqs(),
+                num_retracted_reqs=self.num_retracted_reqs,
+            )
+            self.batch_metrics_exporter.record(metrics)
 
     def log_batch_result_stats(
         self: Scheduler,

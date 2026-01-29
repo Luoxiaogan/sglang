@@ -1058,6 +1058,8 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
     ):
         trace_slice_start(RequestStage.TOKENIZER_DISPATCH, obj.rid)
         tokenized_obj.trace_context = trace_get_proc_propagate_context(obj.rid)
+        tokenized_obj.received_time = created_time or 0.0
+        tokenized_obj.received_time_perf = time.perf_counter()
         self.send_to_scheduler.send_pyobj(tokenized_obj)
         state = self.req_state_class(
             [], False, asyncio.Event(), obj, created_time=created_time
@@ -1078,6 +1080,10 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         created_time: Optional[float] = None,
     ):
         """Send a batch of tokenized requests as a single batched request to the scheduler."""
+        perf_time = time.perf_counter()
+        for tokenized_obj in tokenized_objs:
+            tokenized_obj.received_time = created_time or 0.0
+            tokenized_obj.received_time_perf = perf_time
         if isinstance(tokenized_objs[0], TokenizedGenerateReqInput):
             batch_req = BatchTokenizedGenerateReqInput(batch=tokenized_objs)
         else:

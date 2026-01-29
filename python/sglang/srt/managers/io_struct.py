@@ -761,6 +761,11 @@ class TokenizedGenerateReqInput(BaseReq):
     need_wait_for_image: bool = False
     num_items_assigned: Optional[List] = None
 
+    # HTTP received time (for per-request timing metrics)
+    received_time: float = 0.0
+    # perf_counter version for accurate time interval calculations
+    received_time_perf: float = 0.0
+
 
 @dataclass
 class BatchTokenizedGenerateReqInput(BaseBatchReq):
@@ -924,6 +929,10 @@ class TokenizedEmbeddingReqInput(BaseReq):
     priority: Optional[int] = None
     # The number of dimensions the resulting output embeddings should have. It is applicable for Matryoshka Embeddings.
     dimensions: Optional[int] = None
+
+    # HTTP received time (for per-request timing metrics)
+    received_time: float = 0.0
+    received_time_perf: float = 0.0
 
 
 @dataclass

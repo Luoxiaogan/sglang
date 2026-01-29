@@ -58,7 +58,8 @@ class TimeStats:
     """
 
     disagg_mode: DisaggregationMode = DisaggregationMode.NULL
-    lb_entry_time: float = 0.0
+    lb_entry_time: float = 0.0  # time.time() - epoch timestamp for absolute ordering
+    lb_entry_time_perf: float = 0.0  # time.perf_counter() - for accurate interval calculations
     wait_queue_entry_time: float = 0.0
     forward_entry_time: float = 0.0
     completion_time: float = 0.0

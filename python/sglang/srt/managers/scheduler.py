@@ -1475,6 +1475,8 @@ class Scheduler(
                 dllm_config=self.dllm_config,
             )
             req.tokenizer = self.tokenizer
+            req.time_stats.lb_entry_time = recv_req.received_time
+            req.time_stats.lb_entry_time_perf = recv_req.received_time_perf
 
             if self.disaggregation_mode != DisaggregationMode.NULL:
                 # Invalid request for disaggregated mode
@@ -1742,6 +1744,8 @@ class Scheduler(
             http_worker_ipc=recv_req.http_worker_ipc,
         )
         req.tokenizer = self.tokenizer
+        req.time_stats.lb_entry_time = recv_req.received_time
+        req.time_stats.lb_entry_time_perf = recv_req.received_time_perf
 
         # Handle multimodal inputs
         if recv_req.image_inputs is not None:

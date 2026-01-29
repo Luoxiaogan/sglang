@@ -384,6 +384,12 @@ class ServerArgs:
     export_metrics_to_file: bool = False
     export_metrics_to_file_dir: Optional[str] = None
 
+    # BatchMetricsExporter configuration
+    export_batch_metrics_to_file: Optional[str] = None
+
+    # Per-request metrics CSV export
+    export_request_metrics_to_csv: Optional[str] = None
+
     # API related
     api_key: Optional[str] = None
     admin_api_key: Optional[str] = None
@@ -3269,6 +3275,22 @@ class ServerArgs:
             type=str,
             default=ServerArgs.export_metrics_to_file_dir,
             help="Directory path for writing performance metrics files (required when --export-metrics-to-file is enabled).",
+        )
+
+        # BatchMetricsExporter configuration
+        parser.add_argument(
+            "--export-batch-metrics-to-file",
+            type=str,
+            default=ServerArgs.export_batch_metrics_to_file,
+            help="Export batch-level metrics to a CSV file (e.g., /path/to/batch_metrics.csv). Records every prefill and decode batch.",
+        )
+
+        # Per-request metrics CSV export
+        parser.add_argument(
+            "--export-request-metrics-to-csv",
+            type=str,
+            default=ServerArgs.export_request_metrics_to_csv,
+            help="Export per-request metrics to a CSV file (e.g., /path/to/request_metrics.csv). Records metrics for each completed request.",
         )
 
         # API related
