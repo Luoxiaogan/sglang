@@ -74,6 +74,9 @@ class BatchMetrics:
     gen_throughput: float
     num_queue_reqs: int
     num_retracted_reqs: int
+    # V3: retracted queue metrics
+    num_retracted_queue_reqs: int = 0  # retracted 队列长度
+    num_total_queue_reqs: int = 0      # 总队列（含 retracted）
     # prefill specific fields
     num_new_seqs: int = 0
     num_new_tokens: int = 0
@@ -619,6 +622,8 @@ class SchedulerMetricsMixin:
         # Export batch metrics to CSV for every decode batch
         if self.batch_metrics_exporter:
             num_used, token_usage, _, _ = self._get_token_info()
+            queue_reqs = self._get_num_queue_reqs()  # V3: 提取变量
+            retracted_queue_reqs = getattr(self, "_decode_retracted_queue_snapshot", 0)  # V3
             metrics = BatchMetrics(
                 batch_id=self.forward_ct,
                 timestamp=time.time(),
@@ -629,10 +634,17 @@ class SchedulerMetricsMixin:
                 batch_num_tokens=batch.seq_lens_cpu.sum().item(),
                 gpu_num_reqs=len(self.running_batch.reqs) if not self.running_batch.is_empty() else len(batch.reqs),
                 gen_throughput=self.last_gen_throughput,
-                num_queue_reqs=self._get_num_queue_reqs(),
-                num_retracted_reqs=self.num_retracted_reqs,
+                num_queue_reqs=queue_reqs,
+                num_retracted_reqs=getattr(self, "_batch_retracted_reqs", 0),
+                num_retracted_queue_reqs=retracted_queue_reqs,  # V3: 新增
+                num_total_queue_reqs=queue_reqs + retracted_queue_reqs,  # V3: 新增
+                num_new_seqs=getattr(self, "_decode_new_seqs_snapshot", 0),
             )
             self.batch_metrics_exporter.record(metrics)
+            # Clear after recording to ensure each batch records only once
+            self._decode_new_seqs_snapshot = 0
+            self._batch_retracted_reqs = 0
+            self._decode_retracted_queue_snapshot = 0  # V3: 新增清零
 
     def log_batch_result_stats(
         self: Scheduler,

@@ -960,6 +960,9 @@ class SchedulerDisaggregationDecodeMixin:
 
     def get_new_prebuilt_batch(self: Scheduler) -> Optional[ScheduleBatch]:
         """Create a schedulebatch for fake completed prefill"""
+        # Initialize to 0, will be set if new requests are added
+        self._decode_new_seqs_snapshot = 0
+
         if self.grammar_manager.has_waiting_grammars():
             ready_grammar_requests = self.grammar_manager.get_ready_grammar_requests()
             for req in ready_grammar_requests:
@@ -979,6 +982,7 @@ class SchedulerDisaggregationDecodeMixin:
             + transfer_queue_len
             + waiting_queue_len
         )
+        self._decode_retracted_queue_snapshot = retracted_queue_len  # V3: 保存 retracted 队列快照
 
         # Debug logging for queue analysis (disabled - too frequent)
         if False: logger.info(
@@ -1014,6 +1018,9 @@ class SchedulerDisaggregationDecodeMixin:
         self.waiting_queue = waiting_queue
         if len(can_run_list) == 0:
             return None
+
+        # Save for metrics recording
+        self._decode_new_seqs_snapshot = len(can_run_list)
 
         for req in can_run_list:
             req.time_stats.forward_entry_time = time.perf_counter()
