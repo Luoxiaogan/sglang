@@ -1343,6 +1343,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
     # Metrics
     dp_cooperation_info: Optional[DPCooperationInfo] = None
+    num_retracted_reqs: int = 0
+    retracted_req_ids: Optional[List[str]] = None
 
     @classmethod
     def init_new(
@@ -2165,6 +2167,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         if self.spec_info:
             self.spec_info.merge_batch(other.spec_info)
 
+        self.num_retracted_reqs += other.num_retracted_reqs
+        if other.retracted_req_ids:
+            if self.retracted_req_ids is None:
+                self.retracted_req_ids = []
+            self.retracted_req_ids.extend(other.retracted_req_ids)
+
     def get_model_worker_batch(
         self, seq_lens_cpu_cache: Optional[torch.Tensor] = None
     ) -> ModelWorkerBatch:
@@ -2265,6 +2273,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             mamba_track_mask=self.mamba_track_mask,
             mamba_track_seqlens=self.mamba_track_seqlens,
             dp_cooperation_info=self.dp_cooperation_info,
+            num_retracted_reqs=self.num_retracted_reqs,
+            retracted_req_ids=self.retracted_req_ids,
         )
 
     def maybe_evict_swa(self):

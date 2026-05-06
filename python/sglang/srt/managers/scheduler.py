@@ -2192,7 +2192,8 @@ class Scheduler(
             new_token_gained = new_available_tokens - old_available_tokens
 
             self.num_retracted_reqs = len(retracted_reqs)
-            self._batch_retracted_reqs = len(retracted_reqs)  # For CSV export
+            batch.num_retracted_reqs = len(retracted_reqs)
+            batch.retracted_req_ids = [req.rid for req in retracted_reqs]
             if self.enable_metrics and len(retracted_reqs) > 0:
                 self.metrics_collector.increment_retracted_reqs(
                     num_retracted_reqs=len(retracted_reqs),

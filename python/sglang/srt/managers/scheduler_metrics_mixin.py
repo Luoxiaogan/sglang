@@ -635,7 +635,7 @@ class SchedulerMetricsMixin:
                 gpu_num_reqs=len(self.running_batch.reqs) if not self.running_batch.is_empty() else len(batch.reqs),
                 gen_throughput=self.last_gen_throughput,
                 num_queue_reqs=queue_reqs,
-                num_retracted_reqs=getattr(self, "_batch_retracted_reqs", 0),
+                num_retracted_reqs=batch.num_retracted_reqs,
                 num_retracted_queue_reqs=retracted_queue_reqs,  # V3: 新增
                 num_total_queue_reqs=queue_reqs + retracted_queue_reqs,  # V3: 新增
                 num_new_seqs=getattr(self, "_decode_new_seqs_snapshot", 0),
@@ -643,7 +643,6 @@ class SchedulerMetricsMixin:
             self.batch_metrics_exporter.record(metrics)
             # Clear after recording to ensure each batch records only once
             self._decode_new_seqs_snapshot = 0
-            self._batch_retracted_reqs = 0
             self._decode_retracted_queue_snapshot = 0  # V3: 新增清零
 
     def log_batch_result_stats(
