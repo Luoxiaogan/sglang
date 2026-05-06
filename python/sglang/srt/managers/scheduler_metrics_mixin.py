@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import atexit
 import csv
 import logging
 import time
@@ -43,7 +42,6 @@ logger = logging.getLogger(__name__)
 RECORD_STEP_TIME = get_bool_env_var("SGLANG_RECORD_STEP_TIME")
 LOG_FORWARD_ITERS = envs.SGLANG_LOG_FORWARD_ITERS.get()
 ENABLE_METRICS_DEVICE_TIMER = envs.SGLANG_ENABLE_METRICS_DEVICE_TIMER.get()
-CSV_EXPORT_BUFFER_SIZE = 50
 
 
 class KvMetrics:
@@ -91,9 +89,7 @@ class BatchMetricsCSVExporter:
 
     def __init__(self, filepath: str):
         self.filepath = filepath
-        self.buffer = []
         self._write_header()
-        atexit.register(self.flush)
 
     def _write_header(self):
         with open(self.filepath, "w", newline="") as f:
@@ -101,17 +97,9 @@ class BatchMetricsCSVExporter:
             writer.writerow([field.name for field in fields(BatchMetrics)])
 
     def record(self, metrics: BatchMetrics):
-        self.buffer.append(list(asdict(metrics).values()))
-        if len(self.buffer) >= CSV_EXPORT_BUFFER_SIZE:
-            self.flush()
-
-    def flush(self):
-        if not self.buffer:
-            return
         with open(self.filepath, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerows(self.buffer)
-        self.buffer.clear()
+            writer.writerow(asdict(metrics).values())
 
 
 @dataclass
@@ -159,9 +147,7 @@ class RequestMetricsCSVExporter:
 
     def __init__(self, filepath: str):
         self.filepath = filepath
-        self.buffer = []
         self._write_header()
-        atexit.register(self.flush)
 
     def _write_header(self):
         with open(self.filepath, "w", newline="") as f:
@@ -169,17 +155,9 @@ class RequestMetricsCSVExporter:
             writer.writerow([field.name for field in fields(RequestMetrics)])
 
     def record(self, metrics: RequestMetrics):
-        self.buffer.append(list(asdict(metrics).values()))
-        if len(self.buffer) >= CSV_EXPORT_BUFFER_SIZE:
-            self.flush()
-
-    def flush(self):
-        if not self.buffer:
-            return
         with open(self.filepath, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerows(self.buffer)
-        self.buffer.clear()
+            writer.writerow(asdict(metrics).values())
 
 
 class SchedulerMetricsMixin:
