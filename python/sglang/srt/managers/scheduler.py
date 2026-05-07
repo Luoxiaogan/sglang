@@ -2165,6 +2165,12 @@ class Scheduler(
             batch.batch_is_full = False
             return batch
 
+        # Reset per-iteration batch metrics before checking this decode step.
+        # The same running ScheduleBatch object can survive across decode
+        # iterations, so stale retraction counts must not leak into later CSV rows.
+        batch.num_retracted_reqs = 0
+        batch.retracted_req_ids = None
+
         # Check if decode out of memory
         if (
             kv_full_retract_flag := not batch.check_decode_mem(
