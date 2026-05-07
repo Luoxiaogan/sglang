@@ -390,6 +390,7 @@ class SchedulerOutputProcessorMixin:
         # if finished, also clean up committed kv cache and over-allocated kv cache here
 
         # Check finish condition
+        completed_reqs_this_batch = 0
         for i, (req, next_token_id) in enumerate(zip(batch.reqs, next_token_ids)):
             req: Req
 
@@ -413,6 +414,7 @@ class SchedulerOutputProcessorMixin:
             req.check_finished(new_accepted_len)
 
             if req.finished():
+                completed_reqs_this_batch += 1
                 self.maybe_collect_routed_experts(req)
 
                 if self.server_args.disaggregation_decode_enable_offload_kvcache:
@@ -471,6 +473,7 @@ class SchedulerOutputProcessorMixin:
 
         self.stream_output(batch.reqs, batch.return_logprob)
         self.token_to_kv_pool_allocator.free_group_end()
+        self._decode_completed_reqs_this_batch = completed_reqs_this_batch
 
         self.forward_ct_decode = (self.forward_ct_decode + 1) % (1 << 30)
         if self.current_scheduler_metrics_enabled:

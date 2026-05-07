@@ -83,6 +83,7 @@ class BatchMetrics:
     # V3: retracted queue metrics
     num_retracted_queue_reqs: int = 0  # retracted 队列长度
     num_total_queue_reqs: int = 0      # 总队列（含 retracted）
+    num_prev_completed_reqs: int = 0
     # prefill specific fields
     num_new_seqs: int = 0
     num_new_tokens: int = 0
@@ -662,6 +663,12 @@ class SchedulerMetricsMixin:
             num_used, token_usage, _, _ = self._get_token_info()
             queue_reqs = self._get_num_queue_reqs()  # V3: 提取变量
             retracted_queue_reqs = getattr(self, "_decode_retracted_queue_snapshot", 0)  # V3
+            prev_completed_reqs = getattr(
+                self, "_decode_prev_completed_reqs_snapshot", 0
+            )
+            completed_reqs_this_batch = getattr(
+                self, "_decode_completed_reqs_this_batch", 0
+            )
             metrics = BatchMetrics(
                 batch_id=self.forward_ct,
                 timestamp=time.time(),
@@ -681,12 +688,15 @@ class SchedulerMetricsMixin:
                 pre_decode_token_usage=batch.pre_decode_token_usage,
                 num_retracted_queue_reqs=retracted_queue_reqs,  # V3: 新增
                 num_total_queue_reqs=queue_reqs + retracted_queue_reqs,  # V3: 新增
+                num_prev_completed_reqs=prev_completed_reqs,
                 num_new_seqs=getattr(self, "_decode_new_seqs_snapshot", 0),
             )
             self.batch_metrics_exporter.record(metrics)
             # Clear after recording to ensure each batch records only once
             self._decode_new_seqs_snapshot = 0
             self._decode_retracted_queue_snapshot = 0  # V3: 新增清零
+            self._decode_prev_completed_reqs_snapshot = completed_reqs_this_batch
+            self._decode_completed_reqs_this_batch = 0
 
     def log_batch_result_stats(
         self: Scheduler,
