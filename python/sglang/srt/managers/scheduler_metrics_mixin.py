@@ -74,6 +74,12 @@ class BatchMetrics:
     gen_throughput: float
     num_queue_reqs: int
     num_retracted_reqs: int
+    # decode batch snapshot after KV allocation and before forward
+    pre_decode_batch_size: int = 0
+    pre_decode_batch_num_tokens: int = 0
+    pre_decode_batch_num_tokens_after_one_decode: int = 0
+    pre_decode_num_tokens: int = 0
+    pre_decode_token_usage: float = 0.0
     # V3: retracted queue metrics
     num_retracted_queue_reqs: int = 0  # retracted 队列长度
     num_total_queue_reqs: int = 0      # 总队列（含 retracted）
@@ -255,6 +261,38 @@ class SchedulerMetricsMixin:
             return len(self.disagg_prefill_bootstrap_queue.queue)
         else:
             return len(self.waiting_queue)
+
+    def record_pre_decode_batch_metrics(self: Scheduler, batch: Optional[ScheduleBatch]):
+        """Snapshot decode metrics after KV allocation and before forward."""
+        if batch is None or batch.is_empty() or not batch.forward_mode.is_decode():
+            return
+
+        pre_decode_batch_size = len(batch.reqs)
+        pre_decode_batch_num_tokens_after_one_decode = batch.seq_lens_cpu.sum().item()
+        pre_decode_batch_num_tokens = (
+            pre_decode_batch_num_tokens_after_one_decode - pre_decode_batch_size
+        )
+
+        if self.is_hybrid_swa:
+            full_num_used, swa_num_used, full_token_usage, swa_token_usage, *_ = (
+                self._get_swa_token_info()
+            )
+            pre_decode_num_tokens = max(full_num_used, swa_num_used)
+            pre_decode_token_usage = max(full_token_usage, swa_token_usage)
+        elif self.is_hybrid_ssm:
+            pre_decode_num_tokens, _, pre_decode_token_usage, *_ = (
+                self._get_mamba_token_info()
+            )
+        else:
+            pre_decode_num_tokens, pre_decode_token_usage, _, _ = self._get_token_info()
+
+        batch.pre_decode_batch_size = pre_decode_batch_size
+        batch.pre_decode_batch_num_tokens = pre_decode_batch_num_tokens
+        batch.pre_decode_batch_num_tokens_after_one_decode = (
+            pre_decode_batch_num_tokens_after_one_decode
+        )
+        batch.pre_decode_num_tokens = pre_decode_num_tokens
+        batch.pre_decode_token_usage = pre_decode_token_usage
 
     def init_kv_events(self: Scheduler, kv_events_config: Optional[str]):
         if self.enable_kv_cache_events:
@@ -636,6 +674,11 @@ class SchedulerMetricsMixin:
                 gen_throughput=self.last_gen_throughput,
                 num_queue_reqs=queue_reqs,
                 num_retracted_reqs=batch.num_retracted_reqs,
+                pre_decode_batch_size=batch.pre_decode_batch_size,
+                pre_decode_batch_num_tokens=batch.pre_decode_batch_num_tokens,
+                pre_decode_batch_num_tokens_after_one_decode=batch.pre_decode_batch_num_tokens_after_one_decode,
+                pre_decode_num_tokens=batch.pre_decode_num_tokens,
+                pre_decode_token_usage=batch.pre_decode_token_usage,
                 num_retracted_queue_reqs=retracted_queue_reqs,  # V3: 新增
                 num_total_queue_reqs=queue_reqs + retracted_queue_reqs,  # V3: 新增
                 num_new_seqs=getattr(self, "_decode_new_seqs_snapshot", 0),

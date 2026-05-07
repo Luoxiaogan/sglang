@@ -2236,6 +2236,7 @@ class Scheduler(
 
         # Update batch tensors
         batch.prepare_for_decode()
+        self.record_pre_decode_batch_metrics(batch)
         return batch
 
     def record_batch_in_overlap(self, model_worker_batch: ModelWorkerBatch):

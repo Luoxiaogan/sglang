@@ -1345,6 +1345,11 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     dp_cooperation_info: Optional[DPCooperationInfo] = None
     num_retracted_reqs: int = 0
     retracted_req_ids: Optional[List[str]] = None
+    pre_decode_batch_size: int = 0
+    pre_decode_batch_num_tokens: int = 0
+    pre_decode_batch_num_tokens_after_one_decode: int = 0
+    pre_decode_num_tokens: int = 0
+    pre_decode_token_usage: float = 0.0
 
     @classmethod
     def init_new(
@@ -2172,6 +2177,15 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             if self.retracted_req_ids is None:
                 self.retracted_req_ids = []
             self.retracted_req_ids.extend(other.retracted_req_ids)
+        self.pre_decode_batch_size += other.pre_decode_batch_size
+        self.pre_decode_batch_num_tokens += other.pre_decode_batch_num_tokens
+        self.pre_decode_batch_num_tokens_after_one_decode += (
+            other.pre_decode_batch_num_tokens_after_one_decode
+        )
+        if other.pre_decode_num_tokens:
+            self.pre_decode_num_tokens = other.pre_decode_num_tokens
+        if other.pre_decode_token_usage:
+            self.pre_decode_token_usage = other.pre_decode_token_usage
 
     def get_model_worker_batch(
         self, seq_lens_cpu_cache: Optional[torch.Tensor] = None
@@ -2275,6 +2289,11 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             dp_cooperation_info=self.dp_cooperation_info,
             num_retracted_reqs=self.num_retracted_reqs,
             retracted_req_ids=self.retracted_req_ids,
+            pre_decode_batch_size=self.pre_decode_batch_size,
+            pre_decode_batch_num_tokens=self.pre_decode_batch_num_tokens,
+            pre_decode_batch_num_tokens_after_one_decode=self.pre_decode_batch_num_tokens_after_one_decode,
+            pre_decode_num_tokens=self.pre_decode_num_tokens,
+            pre_decode_token_usage=self.pre_decode_token_usage,
         )
 
     def maybe_evict_swa(self):
