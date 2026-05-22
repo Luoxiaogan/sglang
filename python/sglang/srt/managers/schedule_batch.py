@@ -1350,6 +1350,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     pre_decode_batch_num_tokens_after_one_decode: int = 0
     pre_decode_num_tokens: int = 0
     pre_decode_token_usage: float = 0.0
+    # Per-iter admission/retraction classification (Case 1/2/3)
+    real_admission: int = 0
+    real_retraction: int = 0
+    retracted_K_new: int = 0
 
     @classmethod
     def init_new(
@@ -2186,6 +2190,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             self.pre_decode_num_tokens = other.pre_decode_num_tokens
         if other.pre_decode_token_usage:
             self.pre_decode_token_usage = other.pre_decode_token_usage
+        self.real_admission += other.real_admission
+        self.real_retraction += other.real_retraction
+        self.retracted_K_new += other.retracted_K_new
 
     def get_model_worker_batch(
         self, seq_lens_cpu_cache: Optional[torch.Tensor] = None
@@ -2294,6 +2301,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             pre_decode_batch_num_tokens_after_one_decode=self.pre_decode_batch_num_tokens_after_one_decode,
             pre_decode_num_tokens=self.pre_decode_num_tokens,
             pre_decode_token_usage=self.pre_decode_token_usage,
+            real_admission=self.real_admission,
+            real_retraction=self.real_retraction,
+            retracted_K_new=self.retracted_K_new,
         )
 
     def maybe_evict_swa(self):

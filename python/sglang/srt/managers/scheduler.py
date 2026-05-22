@@ -2170,6 +2170,9 @@ class Scheduler(
         # iterations, so stale retraction counts must not leak into later CSV rows.
         batch.num_retracted_reqs = 0
         batch.retracted_req_ids = None
+        batch.real_admission = 0
+        batch.real_retraction = 0
+        batch.retracted_K_new = 0
 
         # Check if decode out of memory
         if (
@@ -2200,6 +2203,10 @@ class Scheduler(
             self.num_retracted_reqs = len(retracted_reqs)
             batch.num_retracted_reqs = len(retracted_reqs)
             batch.retracted_req_ids = [req.rid for req in retracted_reqs]
+            batch.retracted_K_new = sum(
+                1 for r in retracted_reqs if len(r.output_ids) == 1
+            )
+            batch.real_retraction = len(retracted_reqs) - batch.retracted_K_new
             if self.enable_metrics and len(retracted_reqs) > 0:
                 self.metrics_collector.increment_retracted_reqs(
                     num_retracted_reqs=len(retracted_reqs),
@@ -2239,6 +2246,13 @@ class Scheduler(
 
         if batch.batch_size() < initial_bs:
             batch.batch_is_full = False
+
+        # real_admission: survivors with len(output_ids) == 1 are reqs that
+        # were freshly merged from the prior prebuilt batch and successfully
+        # kept after this iteration's retract check (or never triggered one).
+        batch.real_admission = sum(
+            1 for r in batch.reqs if len(r.output_ids) == 1
+        )
 
         # Update batch tensors
         batch.prepare_for_decode()

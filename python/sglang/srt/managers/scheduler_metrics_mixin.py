@@ -84,6 +84,13 @@ class BatchMetrics:
     num_retracted_queue_reqs: int = 0  # retracted 队列长度
     num_total_queue_reqs: int = 0      # 总队列（含 retracted）
     num_prev_completed_reqs: int = 0
+    # Per-iter admission/retraction classification
+    # real_admission: fresh reqs (len(output_ids)==1) kept after this decode iter's retract check
+    # real_retraction: retracted reqs that had already done >=1 decode forward (len(output_ids)>=2)
+    # retracted_K_new: retracted reqs that were still fresh (len(output_ids)==1), regulator drops
+    real_admission: int = 0
+    real_retraction: int = 0
+    retracted_K_new: int = 0
     # prefill specific fields
     num_new_seqs: int = 0
     num_new_tokens: int = 0
@@ -690,6 +697,9 @@ class SchedulerMetricsMixin:
                 num_total_queue_reqs=queue_reqs + retracted_queue_reqs,  # V3: 新增
                 num_prev_completed_reqs=prev_completed_reqs,
                 num_new_seqs=getattr(self, "_decode_new_seqs_snapshot", 0),
+                real_admission=batch.real_admission,
+                real_retraction=batch.real_retraction,
+                retracted_K_new=batch.retracted_K_new,
             )
             self.batch_metrics_exporter.record(metrics)
             # Clear after recording to ensure each batch records only once
