@@ -642,6 +642,15 @@ class ServerArgs:
     disaggregation_decode_enable_offload_kvcache: bool = False
     # Enable auto FAKE mode for decode node testing, no need to pass bootstrap_host in request
     disaggregation_decode_enable_fake_auto: bool = False
+    # How to handle retraction on the decode side (PD mode):
+    #   "offload"               - copy the retracted req's full KV cache (prefill + decode)
+    #                             to CPU, load it back on resume (original behavior).
+    #   "recompute_decode_only" - offload only the prefill KV to CPU and free the decode
+    #                             KV; on resume, reload prefill from CPU and re-decode the
+    #                             decode segment via the model.
+    disaggregation_decode_retract_mode: Literal[
+        "offload", "recompute_decode_only"
+    ] = "offload"
     num_reserved_decode_tokens: int = 512  # used for decode kv cache offload in PD
     # FIXME: hack to reduce ITL when decode bs is small
     disaggregation_decode_polling_interval: int = 1
@@ -2402,6 +2411,14 @@ class ServerArgs:
                 raise ValueError(
                     "Spec v2 and decode offload kv cache are incompatible and cannot be enabled together."
                 )
+        if self.disaggregation_decode_retract_mode not in (
+            "offload",
+            "recompute_decode_only",
+        ):
+            raise ValueError(
+                "The argument disaggregation-decode-retract-mode must be either "
+                "'offload' or 'recompute_decode_only'."
+            )
         if not (0 < self.swa_full_tokens_ratio <= 1.0):
             raise ValueError("--swa-full-tokens-ratio should be in range (0, 1.0].")
 
@@ -4565,6 +4582,20 @@ class ServerArgs:
             action="store_true",
             help="Auto enable FAKE mode for decode node testing, "
             "no need to pass bootstrap_host and bootstrap_room in request.",
+        )
+        parser.add_argument(
+            "--disaggregation-decode-retract-mode",
+            type=str,
+            choices=["offload", "recompute_decode_only"],
+            default=ServerArgs.disaggregation_decode_retract_mode,
+            help=(
+                "Retraction policy on the decode side under PD mode. "
+                "'offload' copies the retracted req's full KV cache (prefill + decode) to "
+                "CPU on retract and loads it back on resume (default). "
+                "'recompute_decode_only' offloads only the prefill KV to CPU and frees the "
+                "decode KV on retract; on resume the prefill KV is loaded back from CPU and "
+                "the decode segment is re-decoded via the model."
+            ),
         )
         parser.add_argument(
             "--num-reserved-decode-tokens",

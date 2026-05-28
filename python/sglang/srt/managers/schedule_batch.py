@@ -545,6 +545,9 @@ class Req:
         self.kv_allocated_len = 0
         self.kv_committed_freed = False
         self.kv_overallocated_freed = False
+        # For partial-offload retract path: records how many tokens of KV are held
+        # in the CPU snapshot (`self.kv_cache_cpu`). 0 when no snapshot is held.
+        self.kv_cache_cpu_len = 0
 
         # for corss-endoder model
         self.token_type_ids = token_type_ids
@@ -1096,18 +1099,36 @@ class Req:
         self.kv_committed_freed = False
         self.kv_overallocated_freed = False
 
-    def offload_kv_cache(self, req_to_token_pool, token_to_kv_pool_allocator):
-        token_indices = req_to_token_pool.req_to_token[
-            self.req_pool_idx, : self.seqlen - 1
-        ]
-        self.kv_cache_cpu = token_to_kv_pool_allocator.get_cpu_copy(token_indices)
+    def preserved_prefill_kv_len(self, page_size: int) -> int:
+        """Return the page-aligned prefill length used to slice prefill KV apart
+        from decode KV. Used by partial-offload retract paths."""
+        prefill_len = len(self.origin_input_ids)
+        return ((prefill_len + page_size - 1) // page_size) * page_size
 
-    def load_kv_cache(self, req_to_token_pool, token_to_kv_pool_allocator):
-        token_indices = req_to_token_pool.req_to_token[
-            self.req_pool_idx, : self.seqlen - 1
-        ]
+    def offload_kv_cache(
+        self,
+        req_to_token_pool,
+        token_to_kv_pool_allocator,
+        end: Optional[int] = None,
+    ):
+        end = self.seqlen - 1 if end is None else end
+        token_indices = req_to_token_pool.req_to_token[self.req_pool_idx, :end]
+        self.kv_cache_cpu = token_to_kv_pool_allocator.get_cpu_copy(token_indices)
+        self.kv_cache_cpu_len = end
+
+    def load_kv_cache(
+        self,
+        req_to_token_pool,
+        token_to_kv_pool_allocator,
+        end: Optional[int] = None,
+    ):
+        if end is None:
+            # Default: load the full snapshot recorded at offload time.
+            end = self.kv_cache_cpu_len
+        token_indices = req_to_token_pool.req_to_token[self.req_pool_idx, :end]
         token_to_kv_pool_allocator.load_cpu_copy(self.kv_cache_cpu, token_indices)
         del self.kv_cache_cpu
+        self.kv_cache_cpu_len = 0
 
     def log_time_stats(self):
         # If overlap schedule, we schedule one decode batch ahead so this gets called twice.
@@ -1921,10 +1942,28 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     def release_req(self, idx: int, remaing_req_count: int, server_args: ServerArgs):
         req = self.reqs[idx]
 
+        # Decode side: snapshot KV to CPU before releasing GPU slots. The two retract
+        # modes only differ in how much of the KV they snapshot:
+        #   - "offload":               whole sequence (prefill + decode).
+        #   - "recompute_decode_only": prefill segment only; decode segment is dropped
+        #     and will be re-computed by the model on resume.
         if server_args.disaggregation_mode == "decode":
+            full_end = req.seqlen - 1
+            if server_args.disaggregation_decode_retract_mode == "offload":
+                offload_end = full_end
+            else:  # "recompute_decode_only"
+                offload_end = min(
+                    full_end,
+                    req.preserved_prefill_kv_len(
+                        self.token_to_kv_pool_allocator.page_size
+                    ),
+                )
             req.offload_kv_cache(
-                self.req_to_token_pool, self.token_to_kv_pool_allocator
+                self.req_to_token_pool,
+                self.token_to_kv_pool_allocator,
+                end=offload_end,
             )
+
         # TODO (csy): for preempted requests, we may want to insert into the tree
         release_kv_cache(req, self.tree_cache, is_insert=False)
         # NOTE(lsyin): we should use the newly evictable memory instantly.

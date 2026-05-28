@@ -383,25 +383,34 @@ class DecodePreallocQueue:
             if rids_to_check is not None and req.rid not in rids_to_check:
                 continue
 
+            # Both retract modes free the req_pool_idx during release_req, so the
+            # req-slot pool must have headroom for a fresh allocation on resume.
             if self.req_to_token_pool.available_size() <= 0:
                 break
 
-            required_tokens_for_request = (
-                len(req.origin_input_ids)
-                + len(req.output_ids)
-                + self.num_reserved_decode_tokens
-            )
+            required_tokens_for_request = self._required_tokens_for_retracted_req(req)
             if required_tokens_for_request > allocatable_tokens:
                 break
 
             resumed_reqs.append(req)
             indices_to_remove.add(i)
             req.is_retracted = False
-            self._pre_alloc(req)
-            allocatable_tokens -= required_tokens_for_request
 
-            # load from cpu, release the cpu copy
-            req.load_kv_cache(self.req_to_token_pool, self.token_to_kv_pool_allocator)
+            mode = self.scheduler.server_args.disaggregation_decode_retract_mode
+            if mode == "offload":
+                # Full snapshot path: alloc all slots, then bulk-load prefill+decode KV
+                # from the CPU copy.
+                self._pre_alloc(req)
+                req.load_kv_cache(
+                    self.req_to_token_pool, self.token_to_kv_pool_allocator
+                )
+            else:  # "recompute_decode_only"
+                # Partial-offload path: _pre_alloc_decode_only handles "alloc prefill ->
+                # load prefill from CPU -> alloc decode segment" in one shot. The decode
+                # segment KV is left empty and will be filled by the next forward pass.
+                self._pre_alloc_decode_only(req)
+
+            allocatable_tokens -= required_tokens_for_request
 
         self.retracted_queue = [
             entry
@@ -659,13 +668,25 @@ class DecodePreallocQueue:
         if count_retracted:
             allocatable_tokens -= sum(
                 [
-                    len(req.origin_input_ids)
-                    + len(req.output_ids)
-                    + self.num_reserved_decode_tokens
+                    self._required_tokens_for_retracted_req(req)
                     for req in self.retracted_queue
                 ]
             )
         return allocatable_tokens
+
+    def _preserved_kv_len_for_decode_only(self, req: Req, fill_len: int) -> int:
+        page_size = self.token_to_kv_pool_allocator.page_size
+        return min(fill_len, req.preserved_prefill_kv_len(page_size))
+
+    def _required_tokens_for_retracted_req(self, req: Req) -> int:
+        # Both retract modes have to re-allocate the full GPU KV footprint on resume
+        # (prefill + decode). The modes only differ in how each segment is repopulated
+        # (CPU load vs. model recompute), which is irrelevant to capacity planning.
+        return (
+            len(req.origin_input_ids)
+            + len(req.output_ids)
+            + self.num_reserved_decode_tokens
+        )
 
     def _pre_alloc(self, req: Req) -> torch.Tensor:
         """Pre-allocate the memory for req_to_token and token_kv_pool"""
@@ -701,13 +722,127 @@ class DecodePreallocQueue:
             kv_loc is not None
         ), "KV cache is full! There is a bug in memory estimation."
 
-        self.req_to_token_pool.write((req.req_pool_idx, slice(0, len(kv_loc))), kv_loc)
+        self.req_to_token_pool.write(
+            (req.req_pool_idx, slice(0, len(kv_loc))), kv_loc
+        )
 
         # populate metadata
         req.fill_ids = req.origin_input_ids + req.output_ids
         req.set_extend_input_len(len(req.fill_ids))
 
         return kv_loc
+
+    def _pre_alloc_decode_only(self, req: Req) -> torch.Tensor:
+        """Pre-allocate prefill+decode KV slots for a retracted req in
+        ``recompute_decode_only`` mode.
+
+        Layout:
+          1. Allocate a fresh ``req_pool_idx`` (the one held at retract time was
+             returned to the pool by ``release_kv_cache``).
+          2. Allocate the prefill segment ``[0, preserved_len)`` and load the
+             prefill KV back from the CPU snapshot taken at retract time.
+          3. Allocate the decode segment ``[preserved_len, fill_len)`` and leave
+             those slots empty -- the next forward pass will compute and write
+             KV into them.
+
+        ``preserved_len`` is the page-aligned prefill length and matches the
+        snapshot range used in ``ScheduleBatch.release_req``.
+        """
+        if isinstance(self.req_to_token_pool, HybridMambaDecodeReqToTokenPool):
+            req_pool_indices = self.req_to_token_pool.alloc(1, [req])
+        else:
+            req_pool_indices = self.req_to_token_pool.alloc(1)
+        assert (
+            req_pool_indices is not None
+        ), "req_pool_indices is full! There is a bug in memory estimation."
+        req.req_pool_idx = req_pool_indices[0]
+
+        device = self.token_to_kv_pool_allocator.device
+        page_size = self.token_to_kv_pool_allocator.page_size
+
+        fill_len = len(req.origin_input_ids) + max(len(req.output_ids) - 1, 0)
+        preserved_len = self._preserved_kv_len_for_decode_only(req, fill_len)
+        decode_len = fill_len - preserved_len
+
+        # --- Step 1: allocate prefill segment slots [0, preserved_len) ---
+        if preserved_len > 0:
+            if page_size == 1:
+                prefill_loc = self.token_to_kv_pool_allocator.alloc(preserved_len)
+            else:
+                prefill_loc = self.token_to_kv_pool_allocator.alloc_extend(
+                    prefix_lens=torch.tensor([0], dtype=torch.int64, device=device),
+                    prefix_lens_cpu=torch.tensor([0], dtype=torch.int64),
+                    seq_lens=torch.tensor(
+                        [preserved_len], dtype=torch.int64, device=device
+                    ),
+                    seq_lens_cpu=torch.tensor([preserved_len], dtype=torch.int64),
+                    last_loc=torch.tensor([-1], dtype=torch.int64, device=device),
+                    extend_num_tokens=preserved_len,
+                )
+            assert (
+                prefill_loc is not None
+            ), "KV cache is full! There is a bug in memory estimation."
+            self.req_to_token_pool.write(
+                (req.req_pool_idx, slice(0, preserved_len)), prefill_loc
+            )
+
+            # --- Step 2: load prefill KV from CPU snapshot ---
+            assert req.kv_cache_cpu_len == preserved_len, (
+                f"CPU snapshot length {req.kv_cache_cpu_len} does not match "
+                f"preserved prefill length {preserved_len} for rid={req.rid}"
+            )
+            req.load_kv_cache(
+                self.req_to_token_pool,
+                self.token_to_kv_pool_allocator,
+                end=preserved_len,
+            )
+
+        # --- Step 3: allocate decode segment slots [preserved_len, fill_len) ---
+        decode_loc = torch.empty(0, dtype=torch.int64, device=device)
+        if decode_len > 0:
+            if page_size == 1:
+                decode_loc = self.token_to_kv_pool_allocator.alloc(decode_len)
+            else:
+                last_loc = (
+                    self.req_to_token_pool.req_to_token[
+                        req.req_pool_idx, preserved_len - 1
+                    ]
+                    if preserved_len > 0
+                    else torch.tensor(-1, dtype=torch.int64, device=device)
+                )
+                decode_loc = self.token_to_kv_pool_allocator.alloc_extend(
+                    prefix_lens=torch.tensor(
+                        [preserved_len], dtype=torch.int64, device=device
+                    ),
+                    prefix_lens_cpu=torch.tensor([preserved_len], dtype=torch.int64),
+                    seq_lens=torch.tensor(
+                        [fill_len], dtype=torch.int64, device=device
+                    ),
+                    seq_lens_cpu=torch.tensor([fill_len], dtype=torch.int64),
+                    last_loc=last_loc.reshape(1),
+                    extend_num_tokens=decode_len,
+                )
+            assert (
+                decode_loc is not None
+            ), "KV cache is full! There is a bug in memory estimation."
+            self.req_to_token_pool.write(
+                (req.req_pool_idx, slice(preserved_len, fill_len)),
+                decode_loc,
+            )
+
+        # --- Step 4: rebuild req state ---
+        # kv_allocated_len: how many slots are reserved in req_to_token.
+        # kv_committed_len: how many of those slots actually hold valid KV. Only
+        # the prefill segment is valid right now; decode slots are empty and will
+        # be populated by the upcoming forward pass.
+        req.kv_allocated_len = fill_len
+        req.kv_committed_len = preserved_len
+        req.fill_ids = req.origin_input_ids + req.output_ids
+        # Only the decode segment needs to flow through the model -- prefill KV
+        # is already in slots, so do not re-forward those tokens.
+        req.set_extend_input_len(decode_len)
+
+        return decode_loc
 
 
 class DecodeTransferQueue:
