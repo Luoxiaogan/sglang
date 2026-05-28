@@ -831,16 +831,31 @@ class DecodePreallocQueue:
             )
 
         # --- Step 4: rebuild req state ---
-        # kv_allocated_len: how many slots are reserved in req_to_token.
-        # kv_committed_len: how many of those slots actually hold valid KV. Only
-        # the prefill segment is valid right now; decode slots are empty and will
-        # be populated by the upcoming forward pass.
+        # We must keep ``kv_committed_len == kv_allocated_len`` here: the engine
+        # advances both fields by 1 every decode step (see ScheduleBatch.prepare
+        # _for_decode), so any gap created here would persist for the entire
+        # remaining life of the req and trip the ``start_p == end_p`` assertion
+        # in ``release_kv_cache`` when the req finally completes.
+        #
+        # The extend batch built on top of this state will be:
+        #   pre_len  = len(prefix_indices) = 0  (reset_for_retract cleared it)
+        #   seq_len  = len(fill_ids)
+        #   extend_input_len = seq_len - pre_len
+        # which means the model re-forwards the *entire* sequence -- including
+        # the prefill segment whose KV we just loaded from CPU. The prefill
+        # forward is wasted compute but produces identical values, so the slots
+        # remain correct. The decode segment forward fills in the empty slots
+        # with fresh KV.
+        #
+        # NOTE: This wastes the perf benefit of the CPU offload (prefill KV is
+        # recomputed anyway). To actually skip the prefill forward we would need
+        # to populate ``req.prefix_indices`` with the prefill slot indices so
+        # the scheduler treats them as cached prefix. That requires interacting
+        # with the tree_cache invariant and is left as a follow-up.
         req.kv_allocated_len = fill_len
-        req.kv_committed_len = preserved_len
+        req.kv_committed_len = fill_len
         req.fill_ids = req.origin_input_ids + req.output_ids
-        # Only the decode segment needs to flow through the model -- prefill KV
-        # is already in slots, so do not re-forward those tokens.
-        req.set_extend_input_len(decode_len)
+        req.set_extend_input_len(len(req.fill_ids))
 
         return decode_loc
 
